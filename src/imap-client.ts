@@ -337,13 +337,18 @@ export class ImapClient {
       );
       if (!msg) throw new Error(`Message UID ${uid} not found in ${mailbox}`);
 
-      const parts = collectAttachmentParts(msg.bodyStructure);
-      if (parts.length === 0) return await this.fallbackAttachment(client, uid, query);
-      const selection = selectAttachment(parts, query);
+      // An empty tree is an answer: collectAttachmentParts mirrors mailparser's
+      // own isAttachment rule, so parsing the full source would find nothing
+      // either. The fallback is for a structure the server never delivered.
+      if (!msg.bodyStructure) return await this.fallbackAttachment(client, uid, query);
+      const selection = selectAttachment(collectAttachmentParts(msg.bodyStructure), query);
       if (Array.isArray(selection)) return ambiguous(query.filename as string, selection);
 
       // The body structure reports encoded octets; the limit is about real bytes.
-      assertWithinLimit(decodedSize(selection.size, selection.encoding), config.maxAttachmentMb);
+      // Not every encoding can be converted back without them — then maxBytes
+      // caps the stream and the check after the write reports the true size.
+      const estimate = decodedSize(selection.size, selection.encoding);
+      if (estimate !== undefined) assertWithinLimit(estimate, config.maxAttachmentMb);
       const ceiling = query.asBase64 === true
         ? MAX_BASE64_BYTES
         : config.maxAttachmentMb * 1024 * 1024;
@@ -394,15 +399,14 @@ export class ImapClient {
     }));
     const selection = selectAttachment(parts, query);
     if (Array.isArray(selection)) return ambiguous(query.filename as string, selection);
-    const chosen = selection;
-    assertWithinLimit(chosen.size, config.maxAttachmentMb);
-    const content = (parsed.attachments ?? [])[chosen.index as number].content;
+    assertWithinLimit(selection.size, config.maxAttachmentMb);
+    const content = (parsed.attachments ?? [])[selection.index as number].content;
     return await this.deliver(
       Readable.from(content),
       {
-        filename: safeFilename(chosen.filename, chosen.contentType, chosen.index ?? 0),
-        content_type: chosen.contentType,
-        inline: chosen.inline,
+        filename: safeFilename(selection.filename, selection.contentType, selection.index ?? 0),
+        content_type: selection.contentType,
+        inline: selection.inline,
         strategy: "fallback",
       },
       query.asBase64 === true
@@ -432,16 +436,17 @@ export class ImapClient {
 
     if (asBase64) {
       const bytes = await buffer(source);
-      assertWithinLimit(bytes.length, config.maxAttachmentMb);
       if (bytes.length > MAX_BASE64_BYTES) {
         throw new Error(
-          `Attachment is ${bytes.length} bytes, over the ${MAX_BASE64_BYTES}-byte base64 limit. Call without as_base64 to save it to disk instead.`
+          `Attachment is ${bytes.length} bytes (${(bytes.length / 1048576).toFixed(1)} MB), over the ${MAX_BASE64_BYTES / 1024} KB base64 limit. Call without as_base64 to save it to disk instead.`
         );
       }
       return { ...head, size: bytes.length, content_base64: bytes.toString("base64") };
     }
 
-    await mkdir(config.attachmentDir, { recursive: true });
+    await mkdir(config.attachmentDir, { recursive: true }).catch((err: Error) => {
+      throw new Error(`Cannot use ATTACHMENT_DIR ${config.attachmentDir}: ${err.message} — a dangling symlink or an unwritable parent?`);
+    });
     // realpath first, so a symlinked ATTACHMENT_DIR cannot widen the containment check.
     const root = await realpath(config.attachmentDir);
     const { handle, target } = await openUnique(resolveInside(root, base.filename));

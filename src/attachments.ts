@@ -58,7 +58,9 @@ export function collectAttachmentParts(
 ): AttachmentPart[] {
   const found: AttachmentPart[] = [];
   let next = 0;
-  const walk = (node: MessageStructureObject, embedded: boolean): void => {
+  // `part` is the corrected number; `node.part` stays the one imapflow gave, so
+  // the collision test below still compares like with like at every depth.
+  const walk = (node: MessageStructureObject, embedded: boolean, part: string): void => {
     const type = (node.type ?? "application/octet-stream").toLowerCase();
     const disposition = node.disposition?.toLowerCase();
     const multipart = type.startsWith("multipart/");
@@ -67,7 +69,7 @@ export function collectAttachmentParts(
     if (!multipart && isAttachment) {
       found.push({
         index: embedded ? null : next++,
-        part: node.part ?? "1",
+        part,
         filename: node.dispositionParameters?.filename ?? node.parameters?.name ?? null,
         contentType: type,
         size: node.size ?? 0,
@@ -84,10 +86,10 @@ export function collectAttachmentParts(
         wrapsMessage &&
         child.part === node.part &&
         !(child.type ?? "").toLowerCase().startsWith("multipart/");
-      walk(collides ? { ...child, part: `${node.part}.1` } : child, embedded || wrapsMessage);
+      walk(child, embedded || wrapsMessage, collides ? `${part}.1` : child.part ?? "1");
     }
   };
-  if (root) walk(root, false);
+  if (root) walk(root, false, root.part ?? "1");
   return found;
 }
 
@@ -138,8 +140,10 @@ export function safeFilename(
         .normalize("NFKC")
         .replace(/\\/g, "/")
     )
+    // Control characters, plus the bidi overrides that survive NFKC and make
+    // "<U+202E>exe.pdf" show up as "fdp.exe" in Finder.
     // eslint-disable-next-line no-control-regex
-    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/[\u0000-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
     .replace(/^[.\s]+|[.\s]+$/g, "");
   const known = EXT_BY_TYPE[contentType];
   const ext = known ?? ".bin";
@@ -197,9 +201,16 @@ export async function openUnique(
   throw new Error(`Too many files named like ${path.basename(full)}.`);
 }
 
-/** Body-structure sizes are encoded octets (RFC 3501); base64 inflates by 4/3. */
-export function decodedSize(size: number, encoding: string): number {
-  return encoding === "base64" ? Math.floor((size * 3) / 4) : size;
+/**
+ * Body-structure sizes are encoded octets (RFC 3501). base64 carries 57 source
+ * bytes per 78-octet line (RFC 2045), so estimate low rather than reject a legal
+ * attachment. quoted-printable inflates by a factor only the bytes reveal —
+ * `undefined` says "cannot tell", and `maxBytes` plus the post-write check decide.
+ */
+export function decodedSize(size: number, encoding: string): number | undefined {
+  // The last line is padded, so drop one line's worth and stay a lower bound.
+  if (encoding === "base64") return Math.max(0, Math.floor((size * 57) / 78) - 57);
+  return encoding === "quoted-printable" ? undefined : size;
 }
 
 /** Reject on the decoded size — before the stream starts, and again after it. */
