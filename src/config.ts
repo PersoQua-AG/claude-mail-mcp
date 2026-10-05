@@ -6,6 +6,9 @@
  * accounts.json — see src/accounts.ts and README.md.
  */
 
+import { homedir } from "node:os";
+import path from "node:path";
+
 function required(name: string): string {
   const value = process.env[name];
   if (!value || value.trim() === "") {
@@ -63,6 +66,18 @@ export const config = {
    */
   authToken: required("AUTH_TOKEN"),
   publicUrl: optional("PUBLIC_URL", "http://localhost:3220"),
+
+  /**
+   * Directory get_attachment writes into. Hard-wired on purpose — there is no
+   * per-call target path, because mail content can carry prompt injection.
+   */
+  attachmentDir: optional(
+    "ATTACHMENT_DIR",
+    path.join(homedir(), "Downloads", "claude-mail")
+  ),
+
+  /** Refused before the stream starts, using the size from the part tree. */
+  maxAttachmentMb: int("MAX_ATTACHMENT_MB", 25),
 } as const;
 
 export type Config = typeof config;
