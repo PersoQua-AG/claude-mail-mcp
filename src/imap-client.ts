@@ -22,6 +22,7 @@ import {
   assertWithinLimit,
   collectAttachmentParts,
   decodedSize,
+  mayHideAttachments,
   openUnique,
   resolveInside,
   safeFilename,
@@ -100,6 +101,28 @@ export interface AmbiguousAttachments {
   matches: Array<
     Pick<AttachmentPart, "index" | "filename" | "size" | "inline"> & { content_type: string }
   >;
+}
+
+/**
+ * mailparser never descends into `message/rfc822`, so do it here: the embedded
+ * parts land directly behind their wrapper, which is exactly where the body
+ * structure walk numbers them — so get_message and get_attachment agree on
+ * `index` by construction (spec §2 addendum, 2026-10-05).
+ */
+async function flattenAttachments(
+  list: ParsedMail["attachments"],
+  depth = 0
+): Promise<ParsedMail["attachments"]> {
+  const flat: ParsedMail["attachments"] = [];
+  for (const a of list) {
+    flat.push(a);
+    // Mail is untrusted input; eight wrappers deep is already absurd.
+    if (depth < 8 && a.contentType?.toLowerCase() === "message/rfc822") {
+      const inner = await simpleParser(a.content as Buffer);
+      flat.push(...(await flattenAttachments(inner.attachments ?? [], depth + 1)));
+    }
+  }
+  return flat;
 }
 
 /** Several parts carry the requested name: hand back the list instead of guessing. */
@@ -265,6 +288,7 @@ export class ImapClient {
         throw new Error(`Message UID ${uid} not found in ${mailbox}`);
       }
       const parsed: ParsedMail = await simpleParser(msg.source as Buffer);
+      const attachments = await flattenAttachments(parsed.attachments ?? []);
       return {
         uid: msg.uid as number,
         seq: msg.seq as number,
@@ -290,7 +314,7 @@ export class ImapClient {
             : [],
         bodyText: parsed.text ?? null,
         bodyHtml: typeof parsed.html === "string" ? parsed.html : null,
-        attachments: (parsed.attachments ?? []).map((a, index) => ({
+        attachments: attachments.map((a, index) => ({
           index,
           filename: a.filename ?? null,
           contentType: a.contentType,
@@ -337,11 +361,14 @@ export class ImapClient {
       );
       if (!msg) throw new Error(`Message UID ${uid} not found in ${mailbox}`);
 
-      // An empty tree is an answer: collectAttachmentParts mirrors mailparser's
-      // own isAttachment rule, so parsing the full source would find nothing
-      // either. The fallback is for a structure the server never delivered.
-      if (!msg.bodyStructure) return await this.fallbackAttachment(client, uid, query);
-      const selection = selectAttachment(collectAttachmentParts(msg.bodyStructure), query);
+      // An empty tree is only an answer when the tree could not have hidden
+      // anything: a message without attachments must not pull the whole source
+      // just to say so, while a truncated BODYSTRUCTURE must reach the parser.
+      const parts = collectAttachmentParts(msg.bodyStructure);
+      if (parts.length === 0 && mayHideAttachments(msg.bodyStructure)) {
+        return await this.fallbackAttachment(client, uid, query);
+      }
+      const selection = selectAttachment(parts, query);
       if (Array.isArray(selection)) return ambiguous(query.filename as string, selection);
 
       // The body structure reports encoded octets; the limit is about real bytes.
@@ -365,7 +392,7 @@ export class ImapClient {
           filename: safeFilename(
             dl.meta.filename ?? selection.filename,
             contentType,
-            selection.index ?? 0
+            selection.index
           ),
           content_type: contentType,
           inline: selection.inline,
@@ -387,7 +414,8 @@ export class ImapClient {
     const msg = await client.fetchOne(`${uid}`, { source: true }, { uid: true });
     if (!msg) throw new Error(`Message UID ${uid} not found`);
     const parsed: ParsedMail = await simpleParser(msg.source as Buffer);
-    const parts: AttachmentPart[] = (parsed.attachments ?? []).map((a, index) => ({
+    const flat = await flattenAttachments(parsed.attachments ?? []);
+    const parts: AttachmentPart[] = flat.map((a, index) => ({
       index,
       part: "",
       filename: a.filename ?? null,
@@ -400,11 +428,11 @@ export class ImapClient {
     const selection = selectAttachment(parts, query);
     if (Array.isArray(selection)) return ambiguous(query.filename as string, selection);
     assertWithinLimit(selection.size, config.maxAttachmentMb);
-    const content = (parsed.attachments ?? [])[selection.index as number].content;
+    const content = flat[selection.index].content;
     return await this.deliver(
       Readable.from(content),
       {
-        filename: safeFilename(selection.filename, selection.contentType, selection.index ?? 0),
+        filename: safeFilename(selection.filename, selection.contentType, selection.index),
         content_type: selection.contentType,
         inline: selection.inline,
         strategy: "fallback",

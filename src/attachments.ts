@@ -14,8 +14,8 @@ import type { MessageStructureObject } from "imapflow";
 const execFileAsync = promisify(execFile);
 
 export interface AttachmentPart {
-  /** Position in get_message's attachment list, or null inside a forwarded message. */
-  index: number | null;
+  /** Position in get_message's attachment list — embedded parts included. */
+  index: number;
   /** IMAP body part number, e.g. "2" or "2.1". */
   part: string;
   filename: string | null;
@@ -47,28 +47,31 @@ const EXT_BY_TYPE: Record<string, string> = {
 /** mailparser's text types: these count as attachments only when dispositioned so. */
 const TEXT_TYPES = ["text/plain", "text/html", "message/delivery-status"];
 
+const isMultipart = (node: MessageStructureObject): boolean =>
+  (node.type ?? "").toLowerCase().startsWith("multipart/");
+
 /**
- * Walk the body structure depth-first and collect every part mailparser would
- * report as an attachment, so `index` means the same thing here and in
- * get_message. Recursion still enters `message/rfc822` — mailparser does not,
- * so those inner parts carry no index and are reachable by `filename` only.
+ * Walk the body structure depth-first and collect every part that counts as an
+ * attachment, entering `message/rfc822` as spec §8 requires. get_message walks
+ * mailparser's output in the same order, so `index` means the same thing there.
  */
 export function collectAttachmentParts(
   root: MessageStructureObject | undefined
 ): AttachmentPart[] {
   const found: AttachmentPart[] = [];
   let next = 0;
-  // `part` is the corrected number; `node.part` stays the one imapflow gave, so
-  // the collision test below still compares like with like at every depth.
-  const walk = (node: MessageStructureObject, embedded: boolean, part: string): void => {
+  // Part numbers are derived here, never read off `node.part`: imapflow gives an
+  // encapsulated message its wrapper's number, which is only right as long as
+  // nothing deeper follows.
+  const walk = (node: MessageStructureObject, part: string): void => {
     const type = (node.type ?? "application/octet-stream").toLowerCase();
     const disposition = node.disposition?.toLowerCase();
-    const multipart = type.startsWith("multipart/");
+    const multipart = isMultipart(node);
     const isAttachment =
       !TEXT_TYPES.includes(type) || (disposition !== undefined && disposition !== "inline");
     if (!multipart && isAttachment) {
       found.push({
-        index: embedded ? null : next++,
+        index: next++,
         part,
         filename: node.dispositionParameters?.filename ?? node.parameters?.name ?? null,
         contentType: type,
@@ -77,20 +80,46 @@ export function collectAttachmentParts(
         inline: disposition === "inline",
       });
     }
-    const wrapsMessage = type === "message/rfc822";
-    for (const child of node.childNodes ?? []) {
-      // imapflow hands an encapsulated message the wrapper's own part number; a
-      // single-part embedded body is really <wrapper>.1 per RFC 3501, and
-      // downloading the wrapper number would return the whole .eml instead.
-      const collides =
-        wrapsMessage &&
-        child.part === node.part &&
-        !(child.type ?? "").toLowerCase().startsWith("multipart/");
-      walk(child, embedded || wrapsMessage, collides ? `${part}.1` : child.part ?? "1");
+    const children = node.childNodes ?? [];
+    if (multipart) {
+      // RFC 3501: a multipart's children are numbered inside its own number;
+      // the outermost multipart has none, so its children start at "1".
+      children.forEach((child, i) => walk(child, part ? `${part}.${i + 1}` : `${i + 1}`));
+    } else if (type === "message/rfc822") {
+      // The encapsulated body of <n> is <n>.1 when single-part; a multipart one
+      // *is* <n>, so its own children become <n>.1, <n>.2, … one level deeper.
+      for (const child of children) walk(child, isMultipart(child) ? part : `${part}.1`);
     }
   };
-  if (root) walk(root, false, root.part ?? "1");
+  if (root) walk(root, isMultipart(root) ? "" : "1");
   return found;
+}
+
+/** A text part that only a disposition could have marked as an attachment. */
+const couldBeTruncated = (node: MessageStructureObject): boolean =>
+  node.disposition === undefined &&
+  TEXT_TYPES.includes((node.type ?? "").toLowerCase()) &&
+  (node.dispositionParameters?.filename ?? node.parameters?.name) === undefined;
+
+/**
+ * RFC 3501 lets a server end BODYSTRUCTURE right after the disposition, and
+ * imapflow then drops it — a `text/plain` attachment becomes indistinguishable
+ * from the body text and the walk above finds nothing. An empty result is only
+ * an answer when no part looks like that: a text part with neither disposition
+ * nor name that has siblings outside a `multipart/alternative`, where every
+ * child is a variant of the same body anyway.
+ */
+export function mayHideAttachments(root: MessageStructureObject | undefined): boolean {
+  if (!root) return true;
+  const children = root.childNodes ?? [];
+  if (
+    (root.type ?? "").toLowerCase() !== "multipart/alternative" &&
+    children.length > 1 &&
+    children.some(couldBeTruncated)
+  ) {
+    return true;
+  }
+  return children.some(mayHideAttachments);
 }
 
 /** Resolve `index` XOR `filename`; several name matches come back as a list. */
@@ -107,9 +136,8 @@ export function selectAttachment(
   if (by.index !== undefined) {
     const part = parts.find((p) => p.index === by.index);
     if (!part) {
-      const count = parts.filter((p) => p.index !== null).length;
       throw new Error(
-        `Attachment index ${by.index} is out of range — this message has ${count} attachment(s), indexes 0..${count - 1}.`
+        `Attachment index ${by.index} is out of range — this message has ${parts.length} attachment(s), indexes 0..${parts.length - 1}.`
       );
     }
     return part;
@@ -118,7 +146,7 @@ export function selectAttachment(
   if (matches.length === 0) {
     throw new Error(
       `No attachment named "${by.filename}". Available: ${parts
-        .map((p) => `${p.index ?? "in forwarded message"}: ${p.filename ?? "(unnamed)"}`)
+        .map((p) => `${p.index}: ${p.filename ?? "(unnamed)"}`)
         .join(", ")}`
     );
   }
