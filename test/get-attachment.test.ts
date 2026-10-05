@@ -5,6 +5,7 @@
 
 import assert from "node:assert/strict";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { Readable } from "node:stream";
 import path from "node:path";
 import { describe, test } from "node:test";
 import { EXPECTED } from "./helpers/expected.ts";
@@ -192,6 +193,27 @@ describe("get_attachment by part", () => {
       assert.deepEqual(await readdir(dir), ["authorized_keys.pdf"]);
       // Nothing beside the target directory (e.g. a ".ssh" two levels up) was touched.
       assert.ok(!(await readdir(path.dirname(dir))).includes(".ssh"));
+    });
+  });
+});
+
+describe("connection lost mid-stream (spec §8)", () => {
+  test("the partial file is removed and the stream's own error is reported", async () => {
+    const message = generatedMessage({ encoding: "base64", encodedBody: base64Lines(payloadOf(1000)) });
+    const server = fakeServer(message, {
+      download: () => ({
+        meta: { contentType: "application/octet-stream", filename: "data.bin" },
+        content: Readable.from(
+          (async function* () {
+            yield Buffer.alloc(1024, "x");
+            throw new Error("connection reset");
+          })()
+        ),
+      }),
+    });
+    await withAttachmentDir(async (dir) => {
+      await assert.rejects(connect(server).downloadAttachment("INBOX", 1, { index: 0 }), /connection reset/);
+      assert.deepEqual(await readdir(dir), [], "no half-written file may stay behind");
     });
   });
 });
