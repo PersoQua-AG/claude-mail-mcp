@@ -1,0 +1,19 @@
+From: absender@example.test
+To: empfaenger@example.test
+Subject: no-attachment
+Date: Mon, 05 Oct 2026 09:00:00 +0000
+Message-ID: <no-attachment@example.test>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="=_b15_alternative"
+
+--=_b15_alternative
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Nur Text.
+--=_b15_alternative
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+<p>Nur Text.</p>
+--=_b15_alternative--

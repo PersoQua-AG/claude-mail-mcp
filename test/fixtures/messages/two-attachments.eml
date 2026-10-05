@@ -1,0 +1,27 @@
+From: absender@example.test
+To: empfaenger@example.test
+Subject: two-attachments
+Date: Mon, 05 Oct 2026 09:00:00 +0000
+Message-ID: <two-attachments@example.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="=_b2_mixed"
+
+--=_b2_mixed
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Guten Tag,
+anbei die Unterlagen.
+--=_b2_mixed
+Content-Type: application/pdf; name="A.pdf"
+Content-Disposition: attachment; filename="A.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQgZmFrZSBBLnBkZgo=
+--=_b2_mixed
+Content-Type: application/pdf; name="B.pdf"
+Content-Disposition: attachment; filename="B.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQgZmFrZSBCLnBkZgo=
+--=_b2_mixed--

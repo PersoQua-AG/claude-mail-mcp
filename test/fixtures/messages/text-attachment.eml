@@ -1,0 +1,21 @@
+From: absender@example.test
+To: empfaenger@example.test
+Subject: text-attachment
+Date: Mon, 05 Oct 2026 09:00:00 +0000
+Message-ID: <text-attachment@example.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="=_b16_mixed"
+
+--=_b16_mixed
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Guten Tag,
+anbei die Unterlagen.
+--=_b16_mixed
+Content-Type: text/plain; charset="utf-8"
+Content-Disposition: attachment; filename="notes.txt"
+Content-Transfer-Encoding: base64
+
+bWVpbmUgbm90aXplbgo=
+--=_b16_mixed--

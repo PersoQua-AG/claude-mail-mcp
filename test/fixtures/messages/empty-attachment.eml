@@ -1,0 +1,21 @@
+From: absender@example.test
+To: empfaenger@example.test
+Subject: empty-attachment
+Date: Mon, 05 Oct 2026 09:00:00 +0000
+Message-ID: <empty-attachment@example.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="=_b18_mixed"
+
+--=_b18_mixed
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Guten Tag,
+anbei die Unterlagen.
+--=_b18_mixed
+Content-Type: application/pdf; name="empty.pdf"
+Content-Disposition: attachment; filename="empty.pdf"
+Content-Transfer-Encoding: base64
+
+
+--=_b18_mixed--

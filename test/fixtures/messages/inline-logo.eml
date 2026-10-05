@@ -1,0 +1,37 @@
+From: absender@example.test
+To: empfaenger@example.test
+Subject: inline-logo
+Date: Mon, 05 Oct 2026 09:00:00 +0000
+Message-ID: <inline-logo@example.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="=_b5_mixed"
+
+--=_b5_mixed
+Content-Type: multipart/related; boundary="=_b4_related"
+
+--=_b4_related
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+<p>Hallo <img src=cid:logo></p>
+--=_b4_related
+Content-Type: image/png
+Content-ID: <logo>
+Content-Disposition: inline
+Content-Transfer-Encoding: base64
+
+UE5HLWZha2UtbG9nbwo=
+--=_b4_related--
+--=_b5_mixed
+Content-Type: application/pdf; name="A.pdf"
+Content-Disposition: attachment; filename="A.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQgZmFrZSBBLnBkZgo=
+--=_b5_mixed
+Content-Type: application/pdf; name="B.pdf"
+Content-Disposition: attachment; filename="B.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQgZmFrZSBCLnBkZgo=
+--=_b5_mixed--

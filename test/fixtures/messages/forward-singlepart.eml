@@ -1,0 +1,27 @@
+From: absender@example.test
+To: empfaenger@example.test
+Subject: forward-singlepart
+Date: Mon, 05 Oct 2026 09:00:00 +0000
+Message-ID: <forward-singlepart@example.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="=_b8_mixed"
+
+--=_b8_mixed
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Guten Tag,
+anbei die Unterlagen.
+--=_b8_mixed
+Content-Type: message/rfc822
+Content-Disposition: attachment; filename="fwd.eml"
+
+From: weiter@example.test
+Subject: Weitergeleitet
+MIME-Version: 1.0
+Content-Type: application/pdf; name="report.pdf"
+Content-Disposition: attachment; filename="report.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQgZmFrZSByZXBvcnQucGRmCg==
+--=_b8_mixed--

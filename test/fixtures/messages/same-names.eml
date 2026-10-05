@@ -1,0 +1,27 @@
+From: absender@example.test
+To: empfaenger@example.test
+Subject: same-names
+Date: Mon, 05 Oct 2026 09:00:00 +0000
+Message-ID: <same-names@example.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="=_b3_mixed"
+
+--=_b3_mixed
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Guten Tag,
+anbei die Unterlagen.
+--=_b3_mixed
+Content-Type: application/pdf; name="scan.pdf"
+Content-Disposition: attachment; filename="scan.pdf"
+Content-Transfer-Encoding: base64
+
+Zmlyc3Qgc2Nhbgo=
+--=_b3_mixed
+Content-Type: application/pdf; name="scan.pdf"
+Content-Disposition: attachment; filename="scan.pdf"
+Content-Transfer-Encoding: base64
+
+c2Vjb25kIHNjYW4K
+--=_b3_mixed--

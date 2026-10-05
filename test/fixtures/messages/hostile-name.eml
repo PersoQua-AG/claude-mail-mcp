@@ -1,0 +1,21 @@
+From: absender@example.test
+To: empfaenger@example.test
+Subject: hostile-name
+Date: Mon, 05 Oct 2026 09:00:00 +0000
+Message-ID: <hostile-name@example.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="=_b17_mixed"
+
+--=_b17_mixed
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Guten Tag,
+anbei die Unterlagen.
+--=_b17_mixed
+Content-Type: application/pdf; name="../../.ssh/authorized_keys"
+Content-Disposition: attachment; filename="../../.ssh/authorized_keys"
+Content-Transfer-Encoding: base64
+
+ZXZpbAo=
+--=_b17_mixed--
