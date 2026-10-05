@@ -25,7 +25,7 @@ Exposes 15 MCP tools to Claude:
 | `list_folders` | Enumerate IMAP mailboxes (`INBOX`, `Sent`, …) |
 | `list_messages` | Newest N messages in a folder |
 | `search_messages` | Server-side IMAP search (from/to/subject/body/date/flags) |
-| `get_message` | Full body + headers + attachment metadata (with `index` and `inline`) |
+| `get_message` | Full body + headers + attachment metadata (with `index` and `inline`), embedded parts of forwarded messages included |
 | `get_attachment` | Save one attachment to `ATTACHMENT_DIR` and return its path |
 | `send_message` | Send via SMTP, optionally copy to Sent folder |
 | `create_draft` | Build RFC-822 and APPEND to Drafts |

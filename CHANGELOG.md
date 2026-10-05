@@ -7,8 +7,12 @@ All notable changes are documented here. This project follows [Semantic Versioni
 ### Added
 
 - **`get_attachment` tool** — fetches exactly one attachment of one message and saves it to `ATTACHMENT_DIR`, returning the path. Select by `index` (from `get_message`) or by exact `filename`; an ambiguous `filename` returns the list of matches with their indexes instead of guessing. `as_base64: true` inlines the bytes instead, capped at 256 KB. Mail tools are now 10.
-- **`index` and `inline` on `get_message` attachment entries** — `index` is what `get_attachment` takes; `inline` marks parts like signature logos. Additive, no breaking change.
+- **`index` and `inline` on `get_message` attachment entries** — `index` is what `get_attachment` takes; `inline` marks parts like signature logos.
 - **`ATTACHMENT_DIR`** (default `~/Downloads/claude-mail`) and **`MAX_ATTACHMENT_MB`** (default 25) env vars.
+
+### Changed
+
+- **`get_message` now lists attachments inside forwarded messages** (`message/rfc822`), which it did not before. Its attachment list can therefore hold more entries than in 0.2.1, and the `index` of an attachment that follows a forwarded message shifts accordingly. This is deliberate: `index` has to mean the same position in `get_message` and in `get_attachment`, and `get_attachment` reaches embedded parts. Clients that stored an `index` across versions should re-read the list.
 
 ### Security
 
