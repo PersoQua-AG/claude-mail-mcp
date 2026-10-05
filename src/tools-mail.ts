@@ -172,6 +172,52 @@ export function registerMailTools(
   );
 
   server.registerTool(
+    "get_attachment",
+    {
+      description:
+        "Fetch ONE attachment of one message and save it to the connector's attachment directory, returning the path. Pick it with `index` (from get_message) or `filename` — exactly one of the two. There is no target-path parameter by design; the directory is configured server-side. Saved files are quarantined and never opened or executed by this tool. Use as_base64 only for small files (256 KB cap).",
+      inputSchema: {
+        mailbox: z.string().describe("IMAP folder the message lives in"),
+        uid: z
+          .number()
+          .int()
+          .positive()
+          .describe("Message UID as returned by list_messages/search_messages"),
+        index: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("0-based attachment position from get_message"),
+        filename: z
+          .string()
+          .optional()
+          .describe("Exact attachment filename; alternative to index"),
+        as_base64: z
+          .boolean()
+          .optional()
+          .describe(
+            "Return the bytes inline as base64 instead of saving a file (max 256 KB)"
+          ),
+        account: accountSchema,
+      },
+    },
+    async ({ mailbox, uid, index, filename, as_base64, account }) => {
+      if ((index === undefined) === (filename === undefined)) {
+        throw new Error("Provide exactly one of `index` or `filename`.");
+      }
+      const { imap } = pool.for(account);
+      return asJson(
+        await imap.downloadAttachment(mailbox, uid, {
+          index,
+          filename,
+          asBase64: as_base64,
+        })
+      );
+    }
+  );
+
+  server.registerTool(
     "send_message",
     {
       description:
