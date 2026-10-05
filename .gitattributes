@@ -1,0 +1,2 @@
+# CRLF line ends are part of the stored raw messages and structures.
+test/fixtures/** -text
