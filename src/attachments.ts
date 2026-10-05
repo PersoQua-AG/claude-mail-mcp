@@ -6,7 +6,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { MessageStructureObject } from "imapflow";
@@ -14,19 +14,17 @@ import type { MessageStructureObject } from "imapflow";
 const execFileAsync = promisify(execFile);
 
 export interface AttachmentPart {
-  /** Position in the attachment list — the `index` get_attachment takes. */
-  index: number;
+  /** Position in get_message's attachment list, or null inside a forwarded message. */
+  index: number | null;
   /** IMAP body part number, e.g. "2" or "2.1". */
   part: string;
   filename: string | null;
   contentType: string;
+  /** Encoded octet count from the body structure, not the decoded size. */
   size: number;
+  encoding: string;
   inline: boolean;
 }
-
-export type Selection =
-  | { kind: "match"; part: AttachmentPart }
-  | { kind: "ambiguous"; matches: AttachmentPart[] };
 
 /** Fallback extensions for attachments that arrive without a usable name. */
 const EXT_BY_TYPE: Record<string, string> = {
@@ -46,67 +44,83 @@ const EXT_BY_TYPE: Record<string, string> = {
   "message/rfc822": ".eml",
 };
 
+/** mailparser's text types: these count as attachments only when dispositioned so. */
+const TEXT_TYPES = ["text/plain", "text/html", "message/delivery-status"];
+
 /**
- * Walk the body structure depth-first and collect every part that looks like
- * an attachment. Recurses into `message/rfc822` — a forwarded mail carrying
- * the attachment is the common real-world case.
+ * Walk the body structure depth-first and collect every part mailparser would
+ * report as an attachment, so `index` means the same thing here and in
+ * get_message. Recursion still enters `message/rfc822` — mailparser does not,
+ * so those inner parts carry no index and are reachable by `filename` only.
  */
 export function collectAttachmentParts(
   root: MessageStructureObject | undefined
 ): AttachmentPart[] {
-  const found: Omit<AttachmentPart, "index">[] = [];
-  const walk = (node: MessageStructureObject, fallbackPart: string): void => {
+  const found: AttachmentPart[] = [];
+  let next = 0;
+  const walk = (node: MessageStructureObject, embedded: boolean): void => {
     const type = (node.type ?? "application/octet-stream").toLowerCase();
     const disposition = node.disposition?.toLowerCase();
-    const filename =
-      node.dispositionParameters?.filename ?? node.parameters?.name ?? null;
-    if (!type.startsWith("multipart/") && (filename || disposition === "attachment")) {
+    const multipart = type.startsWith("multipart/");
+    const isAttachment =
+      !TEXT_TYPES.includes(type) || (disposition !== undefined && disposition !== "inline");
+    if (!multipart && isAttachment) {
       found.push({
-        part: node.part ?? fallbackPart,
-        filename,
+        index: embedded ? null : next++,
+        part: node.part ?? "1",
+        filename: node.dispositionParameters?.filename ?? node.parameters?.name ?? null,
         contentType: type,
         size: node.size ?? 0,
+        encoding: (node.encoding ?? "").toLowerCase(),
         inline: disposition === "inline",
       });
     }
-    for (const child of node.childNodes ?? []) walk(child, fallbackPart);
+    const wrapsMessage = type === "message/rfc822";
+    for (const child of node.childNodes ?? []) {
+      // imapflow hands an encapsulated message the wrapper's own part number; a
+      // single-part embedded body is really <wrapper>.1 per RFC 3501, and
+      // downloading the wrapper number would return the whole .eml instead.
+      const collides =
+        wrapsMessage &&
+        child.part === node.part &&
+        !(child.type ?? "").toLowerCase().startsWith("multipart/");
+      walk(collides ? { ...child, part: `${node.part}.1` } : child, embedded || wrapsMessage);
+    }
   };
-  if (root) walk(root, "1");
-  return found.map((p, index) => ({ ...p, index }));
+  if (root) walk(root, false);
+  return found;
 }
 
-/** Resolve `index` XOR `filename` against the collected parts. */
+/** Resolve `index` XOR `filename`; several name matches come back as a list. */
 export function selectAttachment(
   parts: AttachmentPart[],
   by: { index?: number; filename?: string }
-): Selection {
-  const hasIndex = by.index !== undefined;
-  const hasName = by.filename !== undefined;
-  if (hasIndex === hasName) {
+): AttachmentPart | AttachmentPart[] {
+  if ((by.index === undefined) === (by.filename === undefined)) {
     throw new Error("Provide exactly one of `index` or `filename`.");
   }
   if (parts.length === 0) {
     throw new Error("This message has no attachments.");
   }
-  if (hasIndex) {
-    const part = parts[by.index as number];
+  if (by.index !== undefined) {
+    const part = parts.find((p) => p.index === by.index);
     if (!part) {
+      const count = parts.filter((p) => p.index !== null).length;
       throw new Error(
-        `Attachment index ${by.index} is out of range — this message has ${parts.length} attachment(s), indexes 0..${parts.length - 1}.`
+        `Attachment index ${by.index} is out of range — this message has ${count} attachment(s), indexes 0..${count - 1}.`
       );
     }
-    return { kind: "match", part };
+    return part;
   }
   const matches = parts.filter((p) => p.filename === by.filename);
   if (matches.length === 0) {
     throw new Error(
       `No attachment named "${by.filename}". Available: ${parts
-        .map((p) => `${p.index}: ${p.filename ?? "(unnamed)"}`)
+        .map((p) => `${p.index ?? "in forwarded message"}: ${p.filename ?? "(unnamed)"}`)
         .join(", ")}`
     );
   }
-  if (matches.length > 1) return { kind: "ambiguous", matches };
-  return { kind: "match", part: matches[0] };
+  return matches.length > 1 ? matches : matches[0];
 }
 
 /**
@@ -126,24 +140,26 @@ export function safeFilename(
     )
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f]/g, "")
-    .replace(/^[.\s]+/, "")
-    .trim();
-  const ext = EXT_BY_TYPE[contentType] ?? ".bin";
-  if (!stripped || /^\.+$/.test(stripped)) return `attachment-${index}${ext}`;
-  const named = /\.[A-Za-z0-9]{1,8}$/.test(stripped) ? stripped : stripped + ext;
-  return clampLength(named);
-}
-
-function clampLength(name: string): string {
-  if (name.length <= 200) return name;
-  const ext = path.extname(name).slice(0, 16);
-  return name.slice(0, 200 - ext.length) + ext;
+    .replace(/^[.\s]+|[.\s]+$/g, "");
+  const known = EXT_BY_TYPE[contentType];
+  const ext = known ?? ".bin";
+  if (!stripped) return `attachment-${index}${ext}`;
+  const own = path.extname(stripped).toLowerCase();
+  // Spec §5.1: the extension has to agree with the declared type, so
+  // invoice.pdf.exe cannot keep .exe. Unknown types keep a plausible one.
+  const agrees = known
+    ? own === known || (known === ".jpg" && own === ".jpeg")
+    : /^\.[a-z0-9]{1,8}$/.test(own);
+  const named = agrees ? stripped : stripped + ext;
+  if (named.length <= 200) return named;
+  const tail = path.extname(named).slice(0, 16);
+  return named.slice(0, 200 - tail.length) + tail;
 }
 
 /**
- * Second check after `safeFilename`: resolve and prove the result still sits
- * under the configured directory. One check alone misses symlinks and
- * normalisation tricks.
+ * Second check after `safeFilename`: prove the result still sits under the
+ * target directory. Callers pass a `realpath`-resolved root, so a symlinked
+ * ATTACHMENT_DIR cannot widen it; this lexical test catches the rest.
  */
 export function resolveInside(dir: string, filename: string): string {
   const root = path.resolve(dir);
@@ -159,20 +175,34 @@ export function resolveInside(dir: string, filename: string): string {
   return full;
 }
 
-/** First writer keeps the plain name; later ones get `-1`, `-2`, … */
-export function uniquePath(full: string): string {
-  if (!existsSync(full)) return full;
+/**
+ * First writer keeps the plain name; later ones get `-1`, `-2`, … `wx` makes
+ * check and create one step, so neither a parallel call nor a planted symlink
+ * can take over the first file.
+ */
+export async function openUnique(
+  full: string
+): Promise<{ handle: FileHandle; target: string }> {
   const dir = path.dirname(full);
   const ext = path.extname(full);
   const stem = path.basename(full, ext);
-  for (let n = 1; n < 1000; n += 1) {
-    const candidate = path.join(dir, `${stem}-${n}${ext}`);
-    if (!existsSync(candidate)) return candidate;
+  for (let n = 0; n < 1000; n += 1) {
+    const target = n === 0 ? full : path.join(dir, `${stem}-${n}${ext}`);
+    try {
+      return { handle: await open(target, "wx"), target };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
   }
   throw new Error(`Too many files named like ${path.basename(full)}.`);
 }
 
-/** Reject on the size from the part tree, before any byte is streamed. */
+/** Body-structure sizes are encoded octets (RFC 3501); base64 inflates by 4/3. */
+export function decodedSize(size: number, encoding: string): number {
+  return encoding === "base64" ? Math.floor((size * 3) / 4) : size;
+}
+
+/** Reject on the decoded size — before the stream starts, and again after it. */
 export function assertWithinLimit(size: number, maxMb: number): void {
   const limit = maxMb * 1024 * 1024;
   if (size > limit) {
@@ -200,14 +230,4 @@ export async function setQuarantine(full: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-/** winmail.dat is handed over as one file; this tool never unpacks it. */
-export function tnefNote(contentType: string, filename: string): string | undefined {
-  const isTnef =
-    contentType === "application/ms-tnef" ||
-    filename.toLowerCase() === "winmail.dat";
-  return isTnef
-    ? "TNEF container (winmail.dat) — saved as a single file, not unpacked."
-    : undefined;
 }
