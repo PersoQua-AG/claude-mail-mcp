@@ -18,14 +18,15 @@ Exposes 14 MCP tools to Claude:
 |------|---------|
 | `list_accounts` | List all configured mailboxes — id, label, default flag, From, CalDAV-enabled. Never returns credentials. |
 
-**Mail (9)**
+**Mail (10)**
 
 | Tool | Purpose |
 |------|---------|
 | `list_folders` | Enumerate IMAP mailboxes (`INBOX`, `Sent`, …) |
 | `list_messages` | Newest N messages in a folder |
 | `search_messages` | Server-side IMAP search (from/to/subject/body/date/flags) |
-| `get_message` | Full body + headers + attachment metadata |
+| `get_message` | Full body + headers + attachment metadata (with `index` and `inline`) |
+| `get_attachment` | Save one attachment to `ATTACHMENT_DIR` and return its path |
 | `send_message` | Send via SMTP, optionally copy to Sent folder |
 | `create_draft` | Build RFC-822 and APPEND to Drafts |
 | `mark_read` | Toggle `\Seen` flag |
@@ -175,6 +176,7 @@ Defaults in one sentence: TLS via Let's Encrypt + HSTS + rate-limited htpasswd +
 - **Storage:** Credentials chmod 600, owned by `mailmcp`, in `/var/lib/mail-mcp/`. htpasswd file chmod 640 (not world-readable). `.env` chmod 640 `root:mailmcp`.
 - **Output:** `list_accounts` returns id/label/From — never credentials. Logs never include passwords or Bearer tokens.
 - **Destructive tools** (`delete_message`) document irreversibility so Claude.ai surfaces a confirmation step. Prefer `move_message` to a Trash folder for reversibility.
+- **Attachments:** `get_attachment` has no target-path parameter — the directory is server-side config (`ATTACHMENT_DIR`), so mail content cannot steer where bytes land. Filenames are rebuilt (separators, NUL, control characters and leading dots stripped, 200-character clamp) and the resolved path is proven to stay inside `ATTACHMENT_DIR`. Oversized attachments are refused from the body structure before the stream opens (`MAX_ATTACHMENT_MB`, default 25). Saved files get `com.apple.quarantine` on macOS; the tool returns a path and never opens or executes a file.
 
 Full threat-model walkthrough and operator hardening checklist in [docs/HARDENING.md](docs/HARDENING.md). Reporting issues: see [SECURITY.md](SECURITY.md).
 

@@ -2,6 +2,22 @@
 
 All notable changes are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`get_attachment` tool** — fetches exactly one attachment of one message and saves it to `ATTACHMENT_DIR`, returning the path. Select by `index` (from `get_message`) or by exact `filename`; an ambiguous `filename` returns the list of matches with their indexes instead of guessing. `as_base64: true` inlines the bytes instead, capped at 256 KB. Mail tools are now 10.
+- **`index` and `inline` on `get_message` attachment entries** — `index` is what `get_attachment` takes; `inline` marks parts like signature logos. Additive, no breaking change.
+- **`ATTACHMENT_DIR`** (default `~/Downloads/claude-mail`) and **`MAX_ATTACHMENT_MB`** (default 25) env vars.
+
+### Security
+
+- Attachment filenames are rebuilt, never trusted: NFKC-normalised, path separators, NUL bytes, control characters and leading dots stripped, clamped to 200 characters, extension derived from the reported content type when missing.
+- Two independent path checks — the rebuilt name plus a `path.resolve` containment check against `ATTACHMENT_DIR`. A path escape is refused, not clamped.
+- **No target-path parameter.** There is no `save_to`; the directory is server-side configuration only, so mail content cannot steer where bytes land.
+- Size is refused from the body structure, before the stream opens. A stream that dies mid-transfer removes its partial file.
+- Saved files get `com.apple.quarantine` on macOS, like a browser download. The tool returns a path and never opens or executes a file.
+
 ## [0.2.1] — 2026-05-21
 
 Security hardening pass. No new features; no breaking API changes.
