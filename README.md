@@ -10,7 +10,7 @@ Self-hosted **IMAP / SMTP / CalDAV connector for Claude** with multi-account sup
 
 ## What it does
 
-Exposes 14 MCP tools to Claude:
+Exposes 15 MCP tools to Claude:
 
 **Accounts (1)**
 
