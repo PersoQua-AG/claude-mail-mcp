@@ -203,9 +203,6 @@ export function registerMailTools(
       },
     },
     async ({ mailbox, uid, index, filename, as_base64, account }) => {
-      if ((index === undefined) === (filename === undefined)) {
-        throw new Error("Provide exactly one of `index` or `filename`.");
-      }
       const { imap } = pool.for(account);
       return asJson(
         await imap.downloadAttachment(mailbox, uid, {

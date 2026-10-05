@@ -9,10 +9,10 @@
  * plain JSON-shaped objects, and don't see imapflow internals.
  */
 
-import { createWriteStream } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, realpath, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { buffer } from "node:stream/consumers";
 import { pipeline } from "node:stream/promises";
 import { ImapFlow, ImapFlowOptions, FetchMessageObject } from "imapflow";
 import { simpleParser, ParsedMail } from "mailparser";
@@ -21,12 +21,12 @@ import {
   AttachmentPart,
   assertWithinLimit,
   collectAttachmentParts,
+  decodedSize,
+  openUnique,
   resolveInside,
   safeFilename,
   selectAttachment,
   setQuarantine,
-  tnefNote,
-  uniquePath,
 } from "./attachments.js";
 
 export interface ImapAuth {
@@ -97,13 +97,24 @@ export interface AttachmentResult {
 export interface AmbiguousAttachments {
   ambiguous: true;
   filename: string;
-  matches: Array<{
-    index: number;
-    filename: string | null;
-    content_type: string;
-    size: number;
-    inline: boolean;
-  }>;
+  matches: Array<
+    Pick<AttachmentPart, "index" | "filename" | "size" | "inline"> & { content_type: string }
+  >;
+}
+
+/** Several parts carry the requested name: hand back the list instead of guessing. */
+function ambiguous(filename: string, matches: AttachmentPart[]): AmbiguousAttachments {
+  return {
+    ambiguous: true,
+    filename,
+    matches: matches.map((m) => ({
+      index: m.index,
+      filename: m.filename,
+      content_type: m.contentType,
+      size: m.size,
+      inline: m.inline,
+    })),
+  };
 }
 
 export interface AttachmentQuery {
@@ -303,6 +314,19 @@ export class ImapClient {
     uid: number,
     query: AttachmentQuery
   ): Promise<AttachmentResult | AmbiguousAttachments> {
+    const result = await this.fetchAttachment(mailbox, uid, query);
+    // Quarantining spawns `xattr`; do it once the mailbox lock is gone.
+    if ("saved_to" in result && result.saved_to) {
+      result.quarantined = await setQuarantine(result.saved_to);
+    }
+    return result;
+  }
+
+  private async fetchAttachment(
+    mailbox: string,
+    uid: number,
+    query: AttachmentQuery
+  ): Promise<AttachmentResult | AmbiguousAttachments> {
     const client = await this.ensureConnected();
     const lock = await client.getMailboxLock(mailbox);
     try {
@@ -314,41 +338,36 @@ export class ImapClient {
       if (!msg) throw new Error(`Message UID ${uid} not found in ${mailbox}`);
 
       const parts = collectAttachmentParts(msg.bodyStructure);
-      let selected: AttachmentPart | null = null;
-      if (parts.length > 0) {
-        const selection = selectAttachment(parts, query);
-        if (selection.kind === "ambiguous") {
-          return {
-            ambiguous: true,
-            filename: query.filename as string,
-            matches: selection.matches.map((m) => ({
-              index: m.index,
-              filename: m.filename,
-              content_type: m.contentType,
-              size: m.size,
-              inline: m.inline,
-            })),
-          };
-        }
-        selected = selection.part;
-      }
-      if (!selected) return await this.fallbackAttachment(client, uid, query);
+      if (parts.length === 0) return await this.fallbackAttachment(client, uid, query);
+      const selection = selectAttachment(parts, query);
+      if (Array.isArray(selection)) return ambiguous(query.filename as string, selection);
 
-      assertWithinLimit(selected.size, config.maxAttachmentMb);
-      const dl = await client.download(`${uid}`, selected.part, { uid: true });
-      const name = safeFilename(
-        dl.meta.filename ?? selected.filename,
-        dl.meta.contentType ?? selected.contentType,
-        selected.index
-      );
-      return await this.deliver(dl.content, {
-        name,
-        contentType: dl.meta.contentType ?? selected.contentType,
-        size: dl.meta.expectedSize ?? selected.size,
-        inline: selected.inline,
-        strategy: "part",
-        asBase64: query.asBase64 === true,
+      // The body structure reports encoded octets; the limit is about real bytes.
+      assertWithinLimit(decodedSize(selection.size, selection.encoding), config.maxAttachmentMb);
+      const ceiling = query.asBase64 === true
+        ? MAX_BASE64_BYTES
+        : config.maxAttachmentMb * 1024 * 1024;
+      const dl = await client.download(`${uid}`, selection.part, {
+        uid: true,
+        // Second line of defence for servers that report no part size: stop one
+        // byte past the ceiling, so an oversized part cannot be streamed in full.
+        maxBytes: ceiling + 1,
       });
+      const contentType = dl.meta.contentType ?? selection.contentType;
+      return await this.deliver(
+        dl.content,
+        {
+          filename: safeFilename(
+            dl.meta.filename ?? selection.filename,
+            contentType,
+            selection.index ?? 0
+          ),
+          content_type: contentType,
+          inline: selection.inline,
+          strategy: "part",
+        },
+        query.asBase64 === true
+      );
     } finally {
       lock.release();
     }
@@ -368,82 +387,75 @@ export class ImapClient {
       part: "",
       filename: a.filename ?? null,
       contentType: a.contentType,
+      // mailparser already decoded, so this is the real byte count.
       size: a.size,
+      encoding: "",
       inline: a.contentDisposition?.toLowerCase() === "inline",
     }));
     const selection = selectAttachment(parts, query);
-    if (selection.kind === "ambiguous") {
-      return {
-        ambiguous: true,
-        filename: query.filename as string,
-        matches: selection.matches.map((m) => ({
-          index: m.index,
-          filename: m.filename,
-          content_type: m.contentType,
-          size: m.size,
-          inline: m.inline,
-        })),
-      };
-    }
-    const chosen = selection.part;
+    if (Array.isArray(selection)) return ambiguous(query.filename as string, selection);
+    const chosen = selection;
     assertWithinLimit(chosen.size, config.maxAttachmentMb);
-    const content = (parsed.attachments ?? [])[chosen.index].content;
-    return await this.deliver(Readable.from(content), {
-      name: safeFilename(chosen.filename, chosen.contentType, chosen.index),
-      contentType: chosen.contentType,
-      size: chosen.size,
-      inline: chosen.inline,
-      strategy: "fallback",
-      asBase64: query.asBase64 === true,
-    });
+    const content = (parsed.attachments ?? [])[chosen.index as number].content;
+    return await this.deliver(
+      Readable.from(content),
+      {
+        filename: safeFilename(chosen.filename, chosen.contentType, chosen.index ?? 0),
+        content_type: chosen.contentType,
+        inline: chosen.inline,
+        strategy: "fallback",
+      },
+      query.asBase64 === true
+    );
   }
 
+  /**
+   * Write the bytes (or inline them) and report the size that actually
+   * arrived — the part tree only knows encoded octets, and the message size
+   * imapflow offers is the whole message, not this part.
+   */
   private async deliver(
     source: Readable,
-    meta: {
-      name: string;
-      contentType: string;
-      size: number;
-      inline: boolean;
-      strategy: "part" | "fallback";
-      asBase64: boolean;
-    }
+    base: Omit<AttachmentResult, "size">,
+    asBase64: boolean
   ): Promise<AttachmentResult> {
-    const base: AttachmentResult = {
-      filename: meta.name,
-      content_type: meta.contentType,
-      size: meta.size,
-      inline: meta.inline,
-      strategy: meta.strategy,
-      note: tnefNote(meta.contentType, meta.name),
+    const tnef =
+      base.content_type === "application/ms-tnef" ||
+      base.filename.toLowerCase() === "winmail.dat";
+    const head = {
+      ...base,
+      // winmail.dat is handed over as one file; this tool never unpacks it.
+      note: tnef
+        ? "TNEF container (winmail.dat) — saved as a single file, not unpacked."
+        : undefined,
     };
 
-    if (meta.asBase64) {
-      if (meta.size > MAX_BASE64_BYTES) {
+    if (asBase64) {
+      const bytes = await buffer(source);
+      assertWithinLimit(bytes.length, config.maxAttachmentMb);
+      if (bytes.length > MAX_BASE64_BYTES) {
         throw new Error(
-          `Attachment is ${meta.size} bytes, over the ${MAX_BASE64_BYTES}-byte base64 limit. Call without as_base64 to save it to disk instead.`
+          `Attachment is ${bytes.length} bytes, over the ${MAX_BASE64_BYTES}-byte base64 limit. Call without as_base64 to save it to disk instead.`
         );
       }
-      const chunks: Buffer[] = [];
-      for await (const chunk of source) chunks.push(chunk as Buffer);
-      return { ...base, content_base64: Buffer.concat(chunks).toString("base64") };
+      return { ...head, size: bytes.length, content_base64: bytes.toString("base64") };
     }
 
-    await mkdir(path.resolve(config.attachmentDir), { recursive: true });
-    const target = uniquePath(resolveInside(config.attachmentDir, meta.name));
+    await mkdir(config.attachmentDir, { recursive: true });
+    // realpath first, so a symlinked ATTACHMENT_DIR cannot widen the containment check.
+    const root = await realpath(config.attachmentDir);
+    const { handle, target } = await openUnique(resolveInside(root, base.filename));
     try {
-      await pipeline(source, createWriteStream(target));
+      await pipeline(source, handle.createWriteStream());
+      const size = (await stat(target)).size;
+      assertWithinLimit(size, config.maxAttachmentMb);
+      return { ...head, filename: path.basename(target), size, saved_to: target };
     } catch (err) {
-      // Never leave half a file behind when the stream dies mid-transfer.
-      await rm(target, { force: true });
+      // Never leave half a file — or an over-limit one — behind, and never let
+      // the cleanup error replace the one that caused it.
+      await rm(target, { force: true }).catch(() => undefined);
       throw err;
     }
-    return {
-      ...base,
-      filename: path.basename(target),
-      saved_to: target,
-      quarantined: await setQuarantine(target),
-    };
   }
 
   async markRead(
